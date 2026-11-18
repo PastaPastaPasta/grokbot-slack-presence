@@ -1,0 +1,12 @@
+venv/
+.venv/
+__pycache__/
+*.pyc
+.env
+*.env
+!slack.env.example
+archive.db
+archive.db-*
+*.db
+mcp-bearer
+secrets/

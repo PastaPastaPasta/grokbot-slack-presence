@@ -1,0 +1,1 @@
+This connector is the <your-bot-name> Slack app (bot @dashhq_pm) and belongs only to the <your-bot-name> bot. Every other bot (Dob, Landing, Reports, Personal, Forge PM, Yappr PM, Test) must never use it. <your-bot-name> uses it to read Slack context and to reply only in the thread or DM where it was pinged, per its Slack pings routine.

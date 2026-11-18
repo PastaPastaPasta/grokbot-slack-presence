@@ -1,0 +1,29 @@
+[Unit]
+Description=<your-bot-name> Slack Socket Mode -> Grok Bot webhook relay
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/opt/<name>/venv/bin/python /opt/<name>/relay.py
+Environment=RELAY_HEALTH_PORT=8788
+User=<name>
+Group=<name>
+WorkingDirectory=/opt/<name>
+EnvironmentFile=/etc/<name>/slack.env
+Environment=PYTHONUNBUFFERED=1
+StateDirectory=<name>
+StateDirectoryMode=0700
+Restart=always
+RestartSec=10
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+
+[Install]
+WantedBy=multi-user.target

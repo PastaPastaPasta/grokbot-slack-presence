@@ -1,0 +1,7 @@
+[Unit]
+Description=Restart <your-bot-name> services after env change
+StartLimitIntervalSec=0
+
+[Service]
+Type=oneshot
+ExecStart=/bin/systemctl try-restart <name>-relay.service <name>-mcp.service

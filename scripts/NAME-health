@@ -1,0 +1,9 @@
+#!/bin/bash
+rc=0
+for u in <name>-relay <name>-mcp <name>-reload.path; do
+  s=$(systemctl is-active "$u"); echo "$u: $s"; [[ $s == active ]] || rc=1
+done
+echo -n "relay:      "; curl -fsS http://127.0.0.1:8788/healthz || { echo "FAIL"; rc=1; }; echo
+echo -n "mcp local:  "; curl -fsS http://127.0.0.1:8787/healthz || { echo "FAIL"; rc=1; }; echo
+echo -n "mcp public: "; curl -fsS --max-time 15 https://<your-host>:<funnel-port>/healthz || { echo "FAIL"; rc=1; }; echo
+exit $rc

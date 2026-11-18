@@ -1,0 +1,8 @@
+[Unit]
+Description=Restart <your-bot-name> services when their env file changes
+
+[Path]
+PathChanged=/etc/<name>/slack.env
+
+[Install]
+WantedBy=multi-user.target

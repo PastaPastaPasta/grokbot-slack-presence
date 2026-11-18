@@ -1,0 +1,18 @@
+#!/bin/bash
+set -euo pipefail
+ENV=/etc/<name>/slack.env
+declare -A PREFIX=([SLACK_BOT_TOKEN]=xoxb- [SLACK_APP_TOKEN]=xapp- [GROK_WEBHOOK_URL]=https:// [GROK_WEBHOOK_KEY]= [SLACK_ALLOWED_USERS]=U)
+name=${1:-}
+[[ -n "$name" && -v PREFIX[$name] ]] || { echo "usage: sudo <name>-set {${!PREFIX[*]}}" >&2; exit 2; }
+[[ $EUID -eq 0 ]] || { echo "run with sudo" >&2; exit 1; }
+if [[ -t 0 ]]; then read -rsp "$name: " value; echo >&2; else IFS= read -r value || [[ -n "$value" ]]; fi
+value=${value//$'\r'/}
+[[ -n "$value" && "$value" == "${PREFIX[$name]}"* ]] || { echo "rejected: $name must start with '${PREFIX[$name]}'" >&2; exit 1; }
+[[ "$value" != *[\'[:space:]]* ]] || { echo "rejected: value contains whitespace or a quote" >&2; exit 1; }
+tmp=$(mktemp /etc/<name>/.slack.env.XXXXXX)
+chmod 600 "$tmp"
+NAME="$name" VALUE="$value" awk 'BEGIN{n=ENVIRON["NAME"]; v=ENVIRON["VALUE"]; done=0}
+  index($0, n "=")==1 {print n "='\''" v "'\''"; done=1; next} {print}
+  END{if(!done) print n "='\''" v "'\''"}' "$ENV" > "$tmp"
+mv "$tmp" "$ENV"
+echo "$name set (${#value} chars). Services restart automatically." >&2

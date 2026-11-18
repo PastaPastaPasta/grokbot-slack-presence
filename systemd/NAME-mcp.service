@@ -1,0 +1,32 @@
+[Unit]
+Description=<your-bot-name> Slack MCP server (bearer-protected, behind Tailscale Funnel :<funnel-port>)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/opt/<name>/venv/bin/python /opt/<name>/mcp_server.py
+Environment=MCP_PORT=8787
+Environment=MCP_PUBLIC_HOST=<your-host>
+LoadCredential=mcp-bearer:/etc/<name>/mcp-bearer
+UnsetEnvironment=SLACK_APP_TOKEN GROK_WEBHOOK_URL GROK_WEBHOOK_KEY SLACK_ALLOWED_USERS
+User=<name>
+Group=<name>
+WorkingDirectory=/opt/<name>
+EnvironmentFile=/etc/<name>/slack.env
+Environment=PYTHONUNBUFFERED=1
+StateDirectory=<name>
+StateDirectoryMode=0700
+Restart=always
+RestartSec=10
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+
+[Install]
+WantedBy=multi-user.target
