@@ -380,6 +380,10 @@ Sync is paced 2 seconds apart **per API method**, about 30 calls a minute, so pi
 
 A **ping** is an `app_mention`, or a `message` in a DM. The relay drops events with a `bot_id`, subtypes other than none / `file_share` / `thread_broadcast`, events with no user, and the bot's own user. It triggers only for IDs in `SLACK_ALLOWED_USERS`; everyone else's messages are archived but never wake the routine. Pings are deduplicated by `channel:ts`.
 
+Optional settings for the relay, in the env file or as `Environment=` lines in the relay unit:
+
+- **`AUTO_JOIN_PUBLIC=0`** stops the relay joining public channels by itself, at startup, on the 6-hourly pass and when a channel is created. The bot is then only where someone invited it, and it archives and answers only there. Use it with an app that has no `channels:join` scope, or when the bot should not read the whole workspace. Default `1`.
+
 The POST to `GROK_WEBHOOK_URL` uses `Authorization: Bearer <GROK_WEBHOOK_KEY>` and a JSON body shaped like this (illustrative — not a real payload):
 
 ```json
