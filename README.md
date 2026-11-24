@@ -383,6 +383,7 @@ A **ping** is an `app_mention`, or a `message` in a DM. The relay drops events w
 Optional settings for the relay, in the env file or as `Environment=` lines in the relay unit:
 
 - **`AUTO_JOIN_PUBLIC=0`** stops the relay joining public channels by itself, at startup, on the 6-hourly pass and when a channel is created. The bot is then only where someone invited it, and it archives and answers only there. Use it with an app that has no `channels:join` scope, or when the bot should not read the whole workspace. Default `1`.
+- **`PING_CHANNELS`** (comma-separated channel IDs, empty by default) names channels where every message is a ping, top-level or in a thread, with no mention needed: a home channel for the bot. The allowlist still decides whose messages are forwarded, and bots are handled as everywhere else. A message that also mentions the bot is forwarded once. In the coworker profile these payloads carry `trigger: "ping_channel"` unless the `app_mention` event for the same message arrived first. Every message between people in such a channel wakes the routine, so its prompt should say when to stay out of a conversation.
 
 The POST to `GROK_WEBHOOK_URL` uses `Authorization: Bearer <GROK_WEBHOOK_KEY>` and a JSON body shaped like this (illustrative — not a real payload):
 
