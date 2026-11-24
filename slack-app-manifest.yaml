@@ -27,6 +27,20 @@ oauth_config:
       - team:read
       - search:read.public
       - search:read.users
+      - users:read.email
+      # coworker profile only; drop these for the guarded 7-tool profile
+      - channels:manage
+      - groups:write
+      - im:write
+      - mpim:write
+      - files:read
+      - files:write
+      - pins:read
+      - pins:write
+      - bookmarks:read
+      - bookmarks:write
+      - usergroups:read
+      - dnd:read
 settings:
   event_subscriptions:
     bot_events:

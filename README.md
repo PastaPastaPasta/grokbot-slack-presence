@@ -6,6 +6,13 @@ This is how to give your Grok Bot its own Slack identity, the way Pasta's dashhq
 
 People @mention or DM your Slack app. A relay on an always-on host archives everything the bot can see, auto-joins public channels, and forwards each allowlisted mention or DM to a Grok Bot webhook routine — with the full thread, the last 20 channel messages, and Slack search results attached. The bot replies in that same thread as the app, through a custom MCP connector.
 
+The code has two profiles, chosen per install with `BOT_PROFILE` (section 2.7):
+
+- **Default (guarded): 7 MCP tools.** The bot can read, search, look up people, react, and reply only in existing threads, with mass mentions neutralized.
+- **`coworker`: 42 MCP tools.** The bot acts like a full workspace member: it can post anywhere it is a member, DM and group-DM people, edit and delete its own messages, and handle files, channels, user groups, pins, bookmarks and scheduled messages. Pings also carry resolved forwarded messages, and group-DM pings are coalesced. The policy for what the bot may do lives in your routine prompt, not in the server.
+
+The unit files in this repo turn on `coworker`. Remove the `Environment=BOT_PROFILE=coworker` lines to get the guarded profile.
+
 No secret values appear in this document. Secret names and file paths are fine. Never paste tokens, webhook URLs, webhook keys, or bearer values into chat.
 
 ## What's in this repo
@@ -14,7 +21,9 @@ No secret values appear in this document. Secret names and file paths are fine. 
 |---|---|---|
 | [`archive.py`](archive.py) | SQLite schema, FTS5, upserts, sync state (shared) | `/opt/<name>/archive.py` |
 | [`relay.py`](relay.py) | Socket Mode relay, archiver, auto-join, backfill, ping forwarder | `/opt/<name>/relay.py` |
-| [`mcp_server.py`](mcp_server.py) | Bearer-protected MCP server | `/opt/<name>/mcp_server.py` |
+| [`mcp_server.py`](mcp_server.py) | Bearer-protected MCP server (the 7 base tools) | `/opt/<name>/mcp_server.py` |
+| [`coworker_tools.py`](coworker_tools.py) | The 35 extra MCP tools, registered only with `BOT_PROFILE=coworker` | `/opt/<name>/coworker_tools.py` |
+| [`slackfmt.py`](slackfmt.py) | Block Kit text, file metadata, and forwarded/shared message extraction (relay and MCP) | `/opt/<name>/slackfmt.py` |
 | [`scripts/NAME-set`](scripts/NAME-set) | Writes one env value, from the tty or stdin | `/usr/local/sbin/<name>-set` |
 | [`scripts/NAME-health`](scripts/NAME-health) | Health check | `/usr/local/bin/<name>-health` |
 | [`systemd/NAME-relay.service`](systemd/NAME-relay.service) | Relay service | `/etc/systemd/system/<name>-relay.service` |
@@ -24,7 +33,7 @@ No secret values appear in this document. Secret names and file paths are fine. 
 | [`slack-app-manifest.yaml`](slack-app-manifest.yaml) | Slack app manifest (section 1) | paste into Slack |
 | [`prompts/`](prompts/) | Grok Bot routine prompt, connector instruction, add-connector message | paste into Grok Bot |
 
-The code is the reference install, copied as-is except that install-specific names were turned into placeholders. Before installing, replace every `<name>`, `<your-host>`, `<funnel-port>` and `<your-bot-name>` in the scripts, units and the two Python fallbacks (`archive.py` default state dir, `mcp_server.py` server name, description and bearer dir), and rename each `NAME-…` file to `<name>-…`. For example:
+The code is the reference install, copied as-is except that install-specific names were turned into placeholders. Before installing, replace every `<name>`, `<your-host>`, `<funnel-port>` and `<your-bot-name>` in the scripts, units and the Python fallbacks (`archive.py` default state dir; `mcp_server.py` default `BOT_LABEL`, `MCP_NAME` and bearer dir, which the units override anyway), and rename each `NAME-…` file to `<name>-…`. For example:
 
 ```bash
 NAME=mybot HOST=myhost.tailxxxxx.ts.net PORT=10000 BOT="My Bot"
@@ -109,6 +118,20 @@ oauth_config:
       - team:read
       - search:read.public
       - search:read.users
+      - users:read.email
+      # coworker profile only; drop these for the guarded 7-tool profile
+      - channels:manage
+      - groups:write
+      - im:write
+      - mpim:write
+      - files:read
+      - files:write
+      - pins:read
+      - pins:write
+      - bookmarks:read
+      - bookmarks:write
+      - usergroups:read
+      - dnd:read
 settings:
   event_subscriptions:
     bot_events:
@@ -152,7 +175,7 @@ Create the group **before** the user. On the reference host, `useradd --system` 
 sudo groupadd --system <name>
 sudo useradd --system -g <name> -d /nonexistent --no-create-home --shell /usr/sbin/nologin <name>
 sudo mkdir -p /opt/<name>
-# copy archive.py, relay.py, mcp_server.py (from this repo, after substitution) and this README into /opt/<name>
+# copy archive.py, relay.py, mcp_server.py, coworker_tools.py, slackfmt.py (from this repo, after substitution) and this README into /opt/<name>
 sudo uv venv --python /usr/bin/python3 --no-managed-python /opt/<name>/venv
 sudo uv pip install --python /opt/<name>/venv/bin/python \
   slack_bolt==1.30.0 slack_sdk==3.47.0 mcp==2.3.0 uvicorn==0.54.0 httpx==0.28.1 aiohttp==3.14.5
@@ -168,6 +191,8 @@ Build the venv on the **system** Python. A uv-managed Python under a home direct
 | `/opt/<name>/archive.py` | root 0644 | SQLite schema, FTS5, upserts, sync state (shared) |
 | `/opt/<name>/relay.py` | root 0644 | Socket Mode relay, archiver, auto-join, backfill, ping forwarder |
 | `/opt/<name>/mcp_server.py` | root 0644 | Bearer-protected MCP server |
+| `/opt/<name>/coworker_tools.py` | root 0644 | Extra MCP tools for `BOT_PROFILE=coworker` |
+| `/opt/<name>/slackfmt.py` | root 0644 | Message/file formatting shared by relay and MCP |
 | `/etc/<name>/` | root 0700 | Secrets directory |
 | `/etc/<name>/slack.env` | root 0600 | Env file: tokens, webhook URL and key, allowlist (template: `slack.env.example`) |
 | `/etc/<name>/mcp-bearer` | root 0600 | MCP bearer, 64 hex characters from `openssl rand -hex 32` |
@@ -207,9 +232,10 @@ ProtectKernelTunables=yes
 ProtectControlGroups=yes
 RestrictSUIDSGID=yes
 LockPersonality=yes
+Environment=BOT_PROFILE=coworker
 ```
 
-Also set `WantedBy=multi-user.target` in each service's `[Install]` section.
+Also set `WantedBy=multi-user.target` in each service's `[Install]` section. `BOT_PROFILE` must match on both services; leave it out of both for the guarded profile.
 
 **`<name>-relay.service`** — add `Environment=RELAY_HEALTH_PORT=8788` and:
 
@@ -225,9 +251,13 @@ Optional: `SYNC_PACE_SECONDS` (default `2.0`).
 ExecStart=/opt/<name>/venv/bin/python /opt/<name>/mcp_server.py
 Environment=MCP_PORT=8787
 Environment=MCP_PUBLIC_HOST=<your-host>
+Environment="BOT_LABEL=<your-bot-name>"
+Environment=MCP_NAME=<name>-slack
 LoadCredential=mcp-bearer:/etc/<name>/mcp-bearer
 UnsetEnvironment=SLACK_APP_TOKEN GROK_WEBHOOK_URL GROK_WEBHOOK_KEY SLACK_ALLOWED_USERS
 ```
+
+`BOT_LABEL` and `MCP_NAME` set the bot name in the MCP's instructions and the MCP server name.
 
 Set `MCP_PUBLIC_HOST` to the same hostname Funnel will serve. The MCP allowlists `Host` values for `127.0.0.1`, `localhost`, and this name; any other `Host` header gets `421`.
 
@@ -278,7 +308,9 @@ sudo install -m 0600 -o root -g root slack.env.example /etc/<name>/slack.env
 | `SLACK_APP_TOKEN` | relay only | App-level token, `xapp-…` |
 | `GROK_WEBHOOK_URL` | relay only | The routine's **POST to** URL (from section 3) |
 | `GROK_WEBHOOK_KEY` | relay only | The routine's **key**, without a `Bearer ` prefix (from section 3) |
-| `SLACK_ALLOWED_USERS` | relay only | Comma-separated Slack member IDs whose pings trigger the routine. Not a secret. Get an ID from the member's Slack profile. |
+| `SLACK_ALLOWED_USERS` | relay only | Comma-separated Slack member IDs whose pings trigger the routine, or `*` for every full member of the bot's own workspace. Not a secret. Get an ID from the member's Slack profile. |
+
+With `SLACK_ALLOWED_USERS='*'`, the relay forwards pings from any full member of the bot's workspace. It skips bots and app users, deactivated users, Slack Connect users (another `team_id`, `user_team`, or `is_stranger`), and guests (`is_restricted` / `is_ultra_restricted`). The check uses `users.info`, cached for an hour.
 
 The MCP bearer is a **separate** file, `/etc/<name>/mcp-bearer`, not an env-file entry:
 
@@ -321,6 +353,14 @@ tailscale funnel --bg --https=<funnel-port> http://127.0.0.1:8787
 The public MCP URL is `https://<your-host>:<funnel-port>/mcp` (omit the port if you used 443). Health is at `https://<your-host>:<funnel-port>/healthz`.
 
 **Funnel must be enabled for the node** by a tailnet admin before this works. The first `tailscale funnel` otherwise hangs, then prints "Funnel is not enabled on your tailnet" with a `login.tailscale.com/f/funnel?node=…` link. Use `--bg` and a timeout in scripts.
+
+Funnel only serves ports 443, 8443 and 10000. If they are all taken (or you run a second bot, section 2.8), mount the MCP on a path instead; Funnel strips the prefix before proxying:
+
+```bash
+tailscale funnel --bg --https=<funnel-port> --set-path=/<name> http://127.0.0.1:<mcp-port>
+```
+
+The MCP URL is then `https://<your-host>:<funnel-port>/<name>/mcp`, and the health check in `scripts/NAME-health` needs the same `/<name>` prefix.
 
 ### 2.6 What the relay and MCP actually do
 
@@ -430,6 +470,55 @@ A message comes back as `{ts, user, user_name, text, permalink, thread_ts?, repl
 
 It checks the three systemd units, the relay and MCP local `/healthz` endpoints, and the public Funnel `/healthz`, and exits non-zero if any of them fail.
 
+### 2.7 The `coworker` profile (`BOT_PROFILE=coworker`)
+
+Set on both services, this registers the tools in `coworker_tools.py` and turns on the relay features below. Without it, the code behaves as described above: 7 tools and the `post_thread_reply` guards.
+
+**Relay**
+
+- **Forwarded and shared messages:** each ping carries `shared_messages`. They come from forwarded or shared attachments (`is_share`, `is_msg_unfurl`, `message_blocks`) and from quoted Slack permalinks in the text.
+  - The relay resolves each one through `conversations.history` / `conversations.replies` when the bot can read the source. Otherwise it keeps the attachment content and sets `resolved: false` with the reason.
+  - Each entry has the author ID and name, channel, ts and permalink.
+  - The ping's own files come with full metadata (`files`: `id`, `name`, `mimetype`, `url_private`, …), and messages whose text is only in Block Kit get their text extracted.
+- **Group DMs:** a plain message in a DM or group DM is a ping (`PING_CHANNEL_TYPES`, default `im,mpim`), alongside `app_mention`. A mention in a group DM is deduplicated.
+- **Coalescing:** pings in the same thread, or for top-level messages the same DM or group DM, that arrive within `PING_COALESCE_SECONDS` (default 20) are merged into one webhook post with `coalesced_pings` and `coalesced_note` (`PING_COALESCE_SECONDS=0` turns this off). The primary fields come from the last ping. Pings waiting in that window are lost if the relay restarts during it.
+- **`channel_kind`:** `public_channel`, `private_channel`, `im` or `mpim`.
+- **`bot_last_reply`:** the bot's most recent message in the thread (or in the DM's recent messages), with `age_seconds`, so the routine can avoid answering twice.
+
+**MCP: 42 tools.** The base 7, plus:
+
+| Area | Tools |
+|---|---|
+| Messages | `get_message` (by permalink or channel + ts, with forwarded/shared content resolved), `post_message` (channel, thread, or a person to DM; optional Block Kit), `update_message`, `delete_message` (own messages) |
+| DMs | `open_dm` (one person, or a group DM of 2–8; `dry_run` resolves without opening) |
+| Reactions | `get_reactions`, `remove_reaction` |
+| Files | `upload_file` (text or base64, max 25 MB), `list_files`, `get_file` (images come back as images, text as text, others as base64; 8 MB cap) |
+| Channels | `get_channel_info`, `list_channel_members`, `join_channel`, `leave_channel`, `create_channel`, `invite_to_channel`, `remove_from_channel`, `set_channel_topic`, `set_channel_purpose`, `rename_channel`, `archive_channel` |
+| People | `get_user`, `get_user_presence` (presence and DND), `list_usergroups`, `get_usergroup_members` |
+| Pins and bookmarks | `pin_message`, `unpin_message`, `list_pins`, `list_bookmarks`, `add_bookmark`, `edit_bookmark`, `remove_bookmark` |
+| Scheduled messages | `schedule_message` (unix seconds or ISO 8601 with a timezone), `list_scheduled_messages`, `delete_scheduled_message` |
+
+Under this profile:
+
+- `post_thread_reply` no longer neutralizes `@here` / `@channel` / `@everyone` / user-group mentions, and the posting tools accept them. The descriptions of `post_message`, `open_dm` and `schedule_message` tell the model the mention syntax.
+- People can be given as a `U…` ID, `<@U…>`, `@handle`, or an exact name or email from the archive.
+- `get_file` sends the bot token only to `https` hosts under `slack.com`. External files return metadata only.
+- Message results also include `files`, `shared` and `edited` where present.
+- It needs the extra scopes marked in the manifest. Reinstall the app after adding them.
+
+Nothing in the server limits *where* a coworker bot posts or *what* it changes. Put that policy in the routine prompt (section 3).
+
+### 2.8 Running a second bot on the same code
+
+One copy of the code in `/opt/<name>` can serve several bots. Each bot needs its own Slack app, Unix user, `/etc/<name2>/` (env file and bearer), `StateDirectory`, units, relay health and MCP ports, and Funnel path. Copy the four units under the new name, then change `User`/`Group`, `EnvironmentFile`, `LoadCredential`, `StateDirectory`, `RELAY_HEALTH_PORT`, `MCP_PORT`, `BOT_LABEL`, `MCP_NAME`, the reload path's `PathChanged`, the unit names in the reload service's `ExecStart`, and the ports and Funnel path in the health script, but keep `ExecStart` and `WorkingDirectory` on the shared `/opt/<name>`. The `-set` helper honors `SLACK_ENV_FILE`, so the second bot's helper can be a one-line wrapper (setting `SLACK_ENV_FILE` in front of `sudo` does not work, because sudo drops it):
+
+```bash
+#!/bin/bash
+SLACK_ENV_FILE=/etc/<name2>/slack.env exec /usr/local/sbin/<name>-set "$@"
+```
+
+Profiles are per bot, so one bot can run guarded and another as `coworker`.
+
 ## 3. Create the Grok Bot webhook routine
 
 Ask your Grok Bot to create a routine with a **webhook** trigger, for example named "Slack pings". After it saves, copy the routine's **Webhook URL** and **Webhook key** from the routine panel in the Grok Bot app. The bot itself never sees the key.
@@ -468,6 +557,8 @@ you are unsure about. Bring the ping to the owner in the Grok Bot chat,
 with a suggested reply.
 ```
 
+With the `coworker` profile the server no longer enforces "reply only in the thread" or "no mass mentions", so state your rules for posting elsewhere, DMs, broadcasts, channel changes, deletions and scheduled messages explicitly in the prompt. Also tell it to check `bot_last_reply` and `coalesced_pings` before answering.
+
 ## 4. Add the connector to the bot
 
 The MCP endpoint is ordinary remote HTTPS (`https://<your-host>:<funnel-port>/mcp` plus the bearer header). Grok Bot has no settings UI for custom connectors, so **ask the bot to add it**. A ready-to-send message is in [`prompts/add-connector-message.md`](prompts/add-connector-message.md), and the connector instruction on its own is in [`prompts/connector-instruction.md`](prompts/connector-instruction.md).
@@ -486,7 +577,7 @@ The MCP endpoint is ordinary remote HTTPS (`https://<your-host>:<funnel-port>/mc
 
 If the connector was added earlier and the tool list looks stale (for example it still shows a removed `list_known_channels` tool, or it is missing `lookup_user` / `list_channels`), ask the bot to refresh the connector.
 
-The tools it should expose are: `list_channels`, `read_channel_history`, `read_thread`, `search_messages`, `lookup_user`, `post_thread_reply`, `add_reaction`.
+The tools it should expose are: `list_channels`, `read_channel_history`, `read_thread`, `search_messages`, `lookup_user`, `post_thread_reply`, `add_reaction`. With `BOT_PROFILE=coworker`, it should show 42 tools: these 7 plus the 35 in section 2.7.
 
 ## 5. Test checklist
 
@@ -521,7 +612,9 @@ The tools it should expose are: `list_channels`, `read_channel_history`, `read_t
 - **The MCP process must not hold the app token or the webhook secrets.** That is what `UnsetEnvironment` and the separate `mcp-bearer` credential are for. The MCP holds the bot token (it has to call Slack) and the bearer (it has to authenticate Grok).
 - **Private channels are opt-in.** Auto-join applies to public channels only. `/invite` starts a backfill.
 - **The bot does not rejoin a public channel it was removed from.**
-- **`post_thread_reply` will refuse** a user ID (that would open a new DM) and a `thread_ts` that does not exist, and it will neutralize mass-mention tokens.
+- **`post_thread_reply` will refuse** a user ID (that would open a new DM) and a `thread_ts` that does not exist. In the default profile it also neutralizes mass-mention tokens; under `coworker` it does not.
+- **Coworker scopes need a reinstall.** If a coworker tool fails with `missing_scope`, the error names the scope; add it to the app and reinstall.
+- **A bot cannot unarchive a channel** it archived with `archive_channel`, and it will not auto-rejoin a public channel it left with `leave_channel`.
 - **FTS quirk:** a query like `x OR NOT y` is read as `x OR y`. Leading `NOT`, repeated operators, and lowercase `or` / `and` / `not` as plain words are otherwise handled.
 - **Permalinks** the server builds for thread replies may omit `?thread_ts=`.
 - **An older bug** made `post_thread_reply` report an error after a successful post, and made `read_thread` fail, because permalink code treated Slack's async response as a dict. That is fixed: permalink failures are non-fatal, and errors carry Slack's real text. If you are on the fixed code, trust a post error and do not assume the message landed.

@@ -7,6 +7,8 @@ Wants=network-online.target
 ExecStart=/opt/<name>/venv/bin/python /opt/<name>/mcp_server.py
 Environment=MCP_PORT=8787
 Environment=MCP_PUBLIC_HOST=<your-host>
+Environment="BOT_LABEL=<your-bot-name>"
+Environment=MCP_NAME=<name>-slack
 LoadCredential=mcp-bearer:/etc/<name>/mcp-bearer
 UnsetEnvironment=SLACK_APP_TOKEN GROK_WEBHOOK_URL GROK_WEBHOOK_KEY SLACK_ALLOWED_USERS
 User=<name>
@@ -14,6 +16,7 @@ Group=<name>
 WorkingDirectory=/opt/<name>
 EnvironmentFile=/etc/<name>/slack.env
 Environment=PYTHONUNBUFFERED=1
+Environment=BOT_PROFILE=coworker
 StateDirectory=<name>
 StateDirectoryMode=0700
 Restart=always

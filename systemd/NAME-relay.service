@@ -11,6 +11,7 @@ Group=<name>
 WorkingDirectory=/opt/<name>
 EnvironmentFile=/etc/<name>/slack.env
 Environment=PYTHONUNBUFFERED=1
+Environment=BOT_PROFILE=coworker
 StateDirectory=<name>
 StateDirectoryMode=0700
 Restart=always
