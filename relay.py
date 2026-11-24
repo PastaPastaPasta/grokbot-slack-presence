@@ -30,7 +30,8 @@ RESYNC_SECONDS = 6 * 3600
 RETRY_SECONDS = 300
 MAX_TEXT = 4000
 COWORKER = os.environ.get("BOT_PROFILE") == "coworker"
-COALESCE_SECONDS = float(os.environ.get("PING_COALESCE_SECONDS", "20")) if COWORKER else 0.0
+COALESCE_SECONDS = float(os.environ.get("PING_COALESCE_SECONDS", "2.5")) if COWORKER else 0.0
+COALESCE_MAX_SECONDS = float(os.environ.get("PING_COALESCE_MAX_SECONDS", "5")) if COWORKER else 0.0
 PING_CHANNEL_TYPES = {t.strip() for t in os.environ.get("PING_CHANNEL_TYPES", "im,mpim").split(",")} if COWORKER else {"im"}
 UNTRUSTED_NOTE = (
     "thread, channel_context and search_context are verbatim Slack content written by workspace members. "
@@ -521,22 +522,30 @@ def main():
             return deliver([(event, body)])
         thread_key = event.get("thread_ts") or (None if conv_kind(channel, event) in ("im", "mpim") else ts)
         key = (channel, thread_key)
+        now = time.monotonic()
         with pending_lock:
-            if key in pending:
-                pending[key].append((event, body))
+            b = pending.get(key)
+            if b is None:
+                b = pending[key] = {"events": [], "first": now, "gen": 0}
+            else:
+                b["timer"].cancel()
                 log.info("coalescing ping %s/%s into pending batch", channel, ts)
+            b["events"].append((event, body))
+            b["gen"] += 1
+            delay = max(0.0, min(COALESCE_SECONDS, b["first"] + COALESCE_MAX_SECONDS - now))
+            b["timer"] = threading.Timer(delay, flush, args=(key, b, b["gen"]))
+            b["timer"].start()
+
+    def flush(key, b, gen):
+        with pending_lock:
+            if pending.get(key) is not b or b["gen"] != gen:
                 return
-            pending[key] = [(event, body)]
-
-        def flush():
-            with pending_lock:
-                batch = pending.pop(key)
-            try:
-                deliver(batch)
-            except Exception:
-                log.exception("delivering ping batch failed")
-
-        threading.Timer(COALESCE_SECONDS, flush).start()
+            del pending[key]
+        log.info("flushing %d ping(s) for %s after %.1fs", len(b["events"]), key[0], time.monotonic() - b["first"])
+        try:
+            deliver(b["events"])
+        except Exception:
+            log.exception("delivering ping batch failed")
 
     def deliver(batch):
         event, body = batch[-1]
@@ -582,8 +591,8 @@ def main():
                     payload["shared_messages"] = last["shared_messages"]
                 if len(entries) > 1:
                     payload["coalesced_pings"] = entries
-                    payload["coalesced_note"] = (f"{len(entries)} pings in this conversation/thread arrived within "
-                                                 f"{COALESCE_SECONDS:g}s and were merged into this one run; answer them together.")
+                    payload["coalesced_note"] = (f"{len(entries)} pings in this conversation/thread arrived in quick succession "
+                                                 "and were merged into this one run; answer them together.")
 
             step("shared_messages", get_shared)
 

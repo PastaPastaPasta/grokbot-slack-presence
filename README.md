@@ -481,7 +481,7 @@ Set on both services, this registers the tools in `coworker_tools.py` and turns 
   - Each entry has the author ID and name, channel, ts and permalink.
   - The ping's own files come with full metadata (`files`: `id`, `name`, `mimetype`, `url_private`, …), and messages whose text is only in Block Kit get their text extracted.
 - **Group DMs:** a plain message in a DM or group DM is a ping (`PING_CHANNEL_TYPES`, default `im,mpim`), alongside `app_mention`. A mention in a group DM is deduplicated.
-- **Coalescing:** pings in the same thread, or for top-level messages the same DM or group DM, that arrive within `PING_COALESCE_SECONDS` (default 20) are merged into one webhook post with `coalesced_pings` and `coalesced_note` (`PING_COALESCE_SECONDS=0` turns this off). The primary fields come from the last ping. Pings waiting in that window are lost if the relay restarts during it.
+- **Coalescing:** pings in the same thread, or for top-level messages the same DM or group DM, are merged into one webhook post with `coalesced_pings` and `coalesced_note`. A batch is forwarded once no new ping has arrived for `PING_COALESCE_SECONDS` (default 2.5), and never later than `PING_COALESCE_MAX_SECONDS` (default 5) after its first ping. `PING_COALESCE_SECONDS=0` turns coalescing off. The primary fields come from the last ping. Pings waiting in that window are lost if the relay restarts during it.
 - **`channel_kind`:** `public_channel`, `private_channel`, `im` or `mpim`.
 - **`bot_last_reply`:** the bot's most recent message in the thread (or in the DM's recent messages), with `age_seconds`, so the routine can avoid answering twice.
 
