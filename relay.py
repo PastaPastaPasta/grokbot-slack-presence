@@ -126,6 +126,32 @@ def main():
     team_id = auth["team_id"]
     any_member = "*" in allowed
     members = {}
+    own_bot_id = auth.get("bot_id")
+    allowed_bots = {u.strip() for u in os.environ.get("SLACK_ALLOWED_BOTS", "").split(",") if u.strip()}
+    bot_limit = int(os.environ.get("SLACK_BOT_PINGS_PER_THREAD_HOUR", "20"))
+    allowed_bot_ids = {}
+    for uid in sorted(allowed_bots):
+        try:
+            u = client.users_info(user=uid)["user"]
+            bid = (u.get("profile") or {}).get("bot_id")
+            if bid:
+                allowed_bot_ids[bid] = uid
+            log.info("allowlisted bot %s (%s) bot_id=%s", uid, u.get("name"), bid)
+        except Exception as e:
+            log.warning("users.info for allowlisted bot %s failed: %s", uid, slack_error(e))
+    bot_hits, bot_hits_lock = {}, threading.Lock()
+
+    def bot_rate_ok(channel, event):
+        key = (channel, event.get("thread_ts") or "top-level")
+        now = time.monotonic()
+        with bot_hits_lock:
+            hits = [t for t in bot_hits.get(key, []) if now - t < 3600]
+            if len(hits) >= bot_limit:
+                bot_hits[key] = hits
+                return False
+            hits.append(now)
+            bot_hits[key] = hits
+            return True
     scopes = set(filter(None, (auth.headers.get("x-oauth-scopes") or "").split(",")))
     status["scopes"] = sorted(scopes)
     log.info("authenticated as %s (%s) in %s; allowlist=%s; scopes=%s", auth["user"], bot_user_id, auth["team"], sorted(allowed), ",".join(sorted(scopes)))
@@ -509,15 +535,35 @@ def main():
     def ping(event, body):
         status["last_event_at"] = int(time.time())
         user = event.get("user")
-        if event.get("bot_id") or event.get("subtype") not in PING_SUBTYPES or not user or user == bot_user_id:
-            return
         channel, ts = event.get("channel"), event.get("ts")
+        bid = event.get("bot_id")
+        if user == bot_user_id or (bid and bid == own_bot_id):
+            return
+        if bid or event.get("subtype") == "bot_message":
+            sender = user if user in allowed_bots else allowed_bot_ids.get(bid)
+            if not sender or event.get("subtype") not in PING_SUBTYPES | {"bot_message"}:
+                return
+            if not seen.add(f"ping:{channel}:{ts}"):
+                return
+            if not bot_rate_ok(channel, event):
+                status["ignored"] += 1
+                log.warning("dropped ping from allowlisted bot %s in %s/%s: over %d per thread per hour",
+                            sender, channel, event.get("thread_ts") or ts, bot_limit)
+                return
+            event = {**event, "user": sender, "_sender_is_bot": True}
+            return queue_ping(event, body)
+        if event.get("subtype") not in PING_SUBTYPES or not user:
+            return
         if not (is_member(user, event) if any_member else user in allowed):
             status["ignored"] += 1
             log.info("ignored ping from non-allowlisted user %s in %s", user, channel)
             return
         if not seen.add(f"ping:{channel}:{ts}"):
             return
+        queue_ping(event, body)
+
+    def queue_ping(event, body):
+        channel, ts = event.get("channel"), event.get("ts")
         if COALESCE_SECONDS <= 0:
             return deliver([(event, body)])
         thread_key = event.get("thread_ts") or (None if conv_kind(channel, event) in ("im", "mpim") else ts)
@@ -556,6 +602,8 @@ def main():
             "thread_ts": thread_ts, "ts": ts, "permalink": f"{team_url}/archives/{channel}/p{ts.replace('.', '')}",
             "thread": [], "channel_context": [], "untrusted_content_note": UNTRUSTED_NOTE,
         }
+        if allowed_bots:
+            payload["is_bot"] = bool(event.get("_sender_is_bot"))
         errs = {}
 
         def step(label, fn):
@@ -575,6 +623,8 @@ def main():
             def ping_entry(ev):
                 e = {"ts": ev.get("ts"), "thread_ts": ev.get("thread_ts"), "user": ev.get("user"),
                      "user_name": name_of(ev.get("user")), "text": ev.get("text", "")}
+                if allowed_bots:
+                    e["is_bot"] = bool(ev.get("_sender_is_bot"))
                 if ev.get("files"):
                     e["files"] = [file_meta(f) for f in ev["files"]]
                 shared = expand_shared(ev)
