@@ -117,7 +117,8 @@ def main():
     webhook_headers = {"Authorization": f"Bearer {os.environ['GROK_WEBHOOK_KEY']}"}
 
     archive = Archive()
-    app = App(token=os.environ["SLACK_BOT_TOKEN"], listener_executor=ThreadPoolExecutor(max_workers=32))
+    app = App(token=os.environ["SLACK_BOT_TOKEN"], listener_executor=ThreadPoolExecutor(max_workers=32),
+              ignoring_self_events_enabled=not COWORKER)
     client = app.client
     client.retry_handlers.append(RateLimitErrorRetryHandler(max_retry_count=10))
     auth = client.auth_test()
@@ -140,6 +141,29 @@ def main():
         except Exception as e:
             log.warning("users.info for allowlisted bot %s failed: %s", uid, slack_error(e))
     bot_hits, bot_hits_lock = {}, threading.Lock()
+    bot_threads = {}
+
+    def is_own(event):
+        return event.get("user") == bot_user_id or bool(own_bot_id and event.get("bot_id") == own_bot_id)
+
+    def in_bot_thread(channel, thread_ts, event):
+        if event.get("parent_user_id") == bot_user_id:
+            return True
+        key = (channel, thread_ts)
+        hit = bot_threads.get(key)
+        if hit and hit[1] > time.time():
+            return hit[0]
+        ok = bool(archive.query(
+            "SELECT 1 FROM messages WHERE channel=? AND (ts=? OR thread_ts=?) AND (user=? OR bot_id=?) LIMIT 1",
+            (channel, thread_ts, thread_ts, bot_user_id, own_bot_id or "")))
+        if not ok:
+            try:
+                msgs = client.conversations_replies(channel=channel, ts=thread_ts, limit=200).get("messages", [])
+                ok = any(is_own(m) for m in msgs)
+            except Exception as e:
+                log.warning("conversations.replies %s/%s for thread check failed: %s", channel, thread_ts, slack_error(e))
+        bot_threads[key] = (ok, time.time() + (86400 if ok else 600))
+        return ok
 
     def bot_rate_ok(channel, event):
         key = (channel, event.get("thread_ts") or "top-level")
@@ -604,6 +628,8 @@ def main():
         }
         if allowed_bots:
             payload["is_bot"] = bool(event.get("_sender_is_bot"))
+        if COWORKER:
+            payload["trigger"] = event.get("_trigger") or ("mention" if event.get("type") == "app_mention" else "dm")
         errs = {}
 
         def step(label, fn):
@@ -711,6 +737,11 @@ def main():
             log.exception("archiving event failed")
         if event.get("channel_type") in PING_CHANNEL_TYPES:
             ping(event, body)
+        elif COWORKER and event.get("thread_ts") and event["thread_ts"] != event.get("ts") and event.get("channel"):
+            if is_own(event):
+                bot_threads[(event["channel"], event["thread_ts"])] = (True, time.time() + 86400)
+            elif in_bot_thread(event["channel"], event["thread_ts"], event):
+                ping({**event, "_trigger": "bot_thread_reply"}, body)
 
     @app.event("channel_created")
     def on_channel_created(event):
