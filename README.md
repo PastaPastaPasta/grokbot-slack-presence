@@ -25,6 +25,7 @@ No secret values appear in this document. Secret names and file paths are fine. 
 | [`coworker_tools.py`](coworker_tools.py) | The 35 extra MCP tools, registered only with `BOT_PROFILE=coworker` | `/opt/<name>/coworker_tools.py` |
 | [`slackfmt.py`](slackfmt.py) | Block Kit text, file metadata, and forwarded/shared message extraction (relay and MCP) | `/opt/<name>/slackfmt.py` |
 | [`redact.py`](redact.py) | Replaces secret-shaped text in what the MCP tools are asked to send (MCP) | `/opt/<name>/redact.py` |
+| [`pingspool.py`](pingspool.py) | Keeps accepted pings on disk until the webhook has taken them (relay) | `/opt/<name>/pingspool.py` |
 | [`scripts/NAME-set`](scripts/NAME-set) | Writes one env value, from the tty or stdin | `/usr/local/sbin/<name>-set` |
 | [`scripts/NAME-health`](scripts/NAME-health) | Health check | `/usr/local/bin/<name>-health` |
 | [`systemd/NAME-relay.service`](systemd/NAME-relay.service) | Relay service | `/etc/systemd/system/<name>-relay.service` |
@@ -176,7 +177,7 @@ Create the group **before** the user. On the reference host, `useradd --system` 
 sudo groupadd --system <name>
 sudo useradd --system -g <name> -d /nonexistent --no-create-home --shell /usr/sbin/nologin <name>
 sudo mkdir -p /opt/<name>
-# copy archive.py, relay.py, mcp_server.py, coworker_tools.py, slackfmt.py, redact.py (from this repo, after substitution) and this README into /opt/<name>
+# copy archive.py, relay.py, mcp_server.py, coworker_tools.py, slackfmt.py, redact.py, pingspool.py (from this repo, after substitution) and this README into /opt/<name>
 sudo uv venv --python /usr/bin/python3 --no-managed-python /opt/<name>/venv
 sudo uv pip install --python /opt/<name>/venv/bin/python \
   slack_bolt==1.30.0 slack_sdk==3.47.0 mcp==2.3.0 uvicorn==0.54.0 httpx==0.28.1 aiohttp==3.14.5
@@ -195,10 +196,12 @@ Build the venv on the **system** Python. A uv-managed Python under a home direct
 | `/opt/<name>/coworker_tools.py` | root 0644 | Extra MCP tools for `BOT_PROFILE=coworker` |
 | `/opt/<name>/slackfmt.py` | root 0644 | Message/file formatting shared by relay and MCP |
 | `/opt/<name>/redact.py` | root 0644 | Outgoing secret filter used by the MCP |
+| `/opt/<name>/pingspool.py` | root 0644 | Ping spool used by the relay |
 | `/etc/<name>/` | root 0700 | Secrets directory |
 | `/etc/<name>/slack.env` | root 0600 | Env file: tokens, webhook URL and key, allowlist (template: `slack.env.example`) |
 | `/etc/<name>/mcp-bearer` | root 0600 | MCP bearer, 64 hex characters from `openssl rand -hex 32` |
 | `/var/lib/<name>/archive.db` (and `-wal`, `-shm`) | `<name>`, 0700 dir | Message archive (systemd `StateDirectory`) |
+| `/var/lib/<name>/ping-spool/` | `<name>`, 0700 dir, files 0600 | Pings accepted and not yet taken by the webhook; normally empty |
 | `/usr/local/sbin/<name>-set` | root 0755 | Writes one env value, from the tty or stdin (`scripts/NAME-set`) |
 | `/usr/local/bin/<name>-health` | root 0755 | Health check (`scripts/NAME-health`) |
 | `/etc/systemd/system/<name>-{relay,mcp}.service` | | Services (`systemd/`) |
@@ -445,7 +448,9 @@ Relay health, locally:
 curl -s 127.0.0.1:8788/healthz
 ```
 
-It reports `state` (`connected`, `disconnected`, or `waiting_for_secrets`; HTTP 503 when disconnected), `scopes`, `sync`, `archive` counts, `search_mode`, and `forwarded` / `ignored` / `archived_events` / `last_forward`.
+It reports `state` (`connected`, `disconnected`, or `waiting_for_secrets`; HTTP 503 when disconnected), `scopes`, `sync`, `archive` counts, `search_mode`, and `forwarded` / `ignored` / `archived_events` / `last_forward`, plus `spooled` (pings on disk waiting for the webhook) and `redelivered`.
+
+**Pings survive a restart and a webhook outage.** Every ping that passed the allowlist is written to `/var/lib/<name>/ping-spool/` before anything else happens, and removed when the webhook answers 2xx, or refuses it for good with a 4xx other than 429. What is still there is delivered again: at start-up, and once a minute when delivery failed (after the three attempts, or because the relay stopped while it was merging follow-ups, gathering context or retrying). A ping older than `PING_SPOOL_MINUTES` (default 30) is dropped with an error in the log; `PING_SPOOL_MINUTES=0` turns the spool off. A ping can therefore arrive twice, when the relay stops between the webhook's answer and removing the file, so a redelivered ping carries `redelivered: true` and a `redelivered_note` telling the routine to check `bot_last_reply` and the thread before it answers. The files hold the Slack event without its `action_token`, so a redelivered ping has no `search_context`. The code is in `pingspool.py`.
 
 **MCP server.** Built on the official MCP Python SDK 2.x. Everything except `GET /healthz` needs `Authorization: Bearer` matching `/etc/<name>/mcp-bearer`, compared in constant time; otherwise the server returns 401.
 
@@ -644,7 +649,7 @@ The tools it should expose are: `list_channels`, `read_channel_history`, `read_t
 | Routine never fires | Sender not allowlisted, bad webhook URL/key, or rate limit | Check `ignored` vs `forwarded`, relay logs (they should not contain the webhook URL), and routine run limits |
 | Connector missing tools, or still shows `list_known_channels` | Stale connector cache | Refresh the connector; expected tools are listed in section 4 |
 | `search_messages` is thin | Backfill still running, or the message is older than what Slack will give this workspace | Check archive progress in health; 30 days are filled first |
-| Reply posted twice | A retry after an unclear post error | Read the thread before retrying |
+| Reply posted twice | A retry after an unclear post error, or a ping delivered again after a restart (`redelivered: true`) | Read the thread before retrying; have the routine check `bot_last_reply` on redelivered pings |
 
 ## Why custom code
 

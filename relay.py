@@ -15,6 +15,7 @@ from slack_bolt.adapter.socket_mode import SocketModeHandler
 from slack_sdk.errors import SlackApiError
 from slack_sdk.http_retry.builtin_handlers import RateLimitErrorRetryHandler
 
+import pingspool
 from archive import Archive, channel_kind, missing_env, user_display
 from slackfmt import file_meta, merge_original, message_text, shared_refs
 
@@ -120,6 +121,8 @@ def main():
     webhook_headers = {"Authorization": f"Bearer {os.environ['GROK_WEBHOOK_KEY']}"}
 
     archive = Archive()
+    spool = pingspool.PingSpool()
+    status["spooled"] = spool.waiting()
     app = App(token=os.environ["SLACK_BOT_TOKEN"], listener_executor=ThreadPoolExecutor(max_workers=32),
               ignoring_self_events_enabled=not COWORKER)
     client = app.client
@@ -553,14 +556,15 @@ def main():
                 if r.is_success:
                     status["forwarded"] += 1
                     log.info("forwarded %s/%s -> %s (%d bytes)", payload["channel"], payload["ts"], r.status_code, len(r.request.content))
-                    return
+                    return "delivered"
                 log.warning("webhook returned %s: %s", r.status_code, r.text[:300])
                 if r.status_code != 429 and r.status_code < 500:
-                    return
+                    return "refused"
             except httpx.HTTPError as e:
                 status["last_forward"] = {"at": int(time.time()), "error": type(e).__name__}
                 log.warning("webhook error: %s", type(e).__name__)
         log.error("giving up forwarding %s/%s", payload["channel"], payload["ts"])
+        return "failed"
 
     pending, pending_lock = {}, threading.Lock()
 
@@ -597,6 +601,7 @@ def main():
 
     def queue_ping(event, body):
         channel, ts = event.get("channel"), event.get("ts")
+        spool.put(event)
         if COALESCE_SECONDS <= 0:
             return deliver([(event, body)])
         thread_key = event.get("thread_ts") or (None if conv_kind(channel, event) in ("im", "mpim") else ts)
@@ -626,7 +631,7 @@ def main():
         except Exception:
             log.exception("delivering ping batch failed")
 
-    def deliver(batch):
+    def build_and_forward(batch):
         event, body = batch[-1]
         user, channel, ts = event.get("user"), event.get("channel"), event.get("ts")
         thread_ts = event.get("thread_ts") or ts
@@ -724,7 +729,37 @@ def main():
             step("bot_last_reply", get_bot_last)
         if errs:
             payload["context_errors"] = errs
-        forward(payload)
+        if any(ev.get("_redelivered") for ev, _ in batch):
+            payload["redelivered"] = True
+            payload["redelivered_note"] = pingspool.REDELIVERED_NOTE
+        return forward(payload)
+
+    def deliver(batch):
+        # Whatever happens while the payload is built or sent, the pings stay spooled unless the webhook took them
+        # or refused them for good.
+        outcome = "failed"
+        try:
+            outcome = build_and_forward(batch)
+        finally:
+            spool.settle([ev for ev, _ in batch], keep=outcome == "failed")
+            status["spooled"] = spool.waiting()
+
+    def spool_loop():
+        # Pings left on disk by an earlier run are delivered at start-up; pings whose delivery failed, once a minute.
+        while True:
+            try:
+                for events in spool.due():
+                    for ev in events:
+                        seen.add(f"ping:{ev.get('channel')}:{ev.get('ts')}")
+                    log.info("delivering %d spooled ping(s) for %s again", len(events), events[-1].get("channel"))
+                    status["redelivered"] = status.get("redelivered", 0) + len(events)
+                    try:
+                        deliver([(ev, {}) for ev in events])
+                    except Exception:
+                        log.exception("delivering spooled pings failed")
+            except Exception:
+                log.exception("ping spool pass failed")
+            time.sleep(pingspool.RETRY_SECONDS)
 
     # ---------- events ----------
 
@@ -785,6 +820,8 @@ def main():
         work.put(event["channel"])
 
     threading.Thread(target=sync_loop, daemon=True, name="sync").start()
+    if spool.enabled:
+        threading.Thread(target=spool_loop, daemon=True, name="ping-spool").start()
     handler = SocketModeHandler(app, os.environ["SLACK_APP_TOKEN"])
     status["state"] = "running"
     handler.start()
