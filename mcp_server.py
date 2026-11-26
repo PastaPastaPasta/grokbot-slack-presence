@@ -16,6 +16,7 @@ from slack_sdk.errors import SlackApiError
 from slack_sdk.http_retry.builtin_async_handlers import AsyncRateLimitErrorRetryHandler
 from slack_sdk.web.async_client import AsyncWebClient
 
+import redact
 from archive import Archive, channel_kind, fts_query, missing_env, user_display
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
@@ -53,8 +54,17 @@ mcp = MCPServer(
 def slack_tool(fn):
     @functools.wraps(fn)
     async def wrapper(*args, **kwargs):
+        found = []
+        if redact.ENABLED:
+            # Every string the caller passes is filtered before the tool runs: see redact.py.
+            args, kwargs, found = redact.scrub_call(args, kwargs)
+            if found:
+                log.warning("%s: replaced secret-shaped text in the arguments (%s)", fn.__name__, ", ".join(found))
         try:
-            return await fn(*args, **kwargs)
+            out = await fn(*args, **kwargs)
+            if found and isinstance(out, dict):
+                out = {**out, "redacted": found, "redacted_note": redact.NOTE}
+            return out
         except SlackApiError as e:
             msg = f"Slack API error: {e.response.get('error', 'unknown')}"
             if e.response.get("needed"):

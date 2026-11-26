@@ -24,6 +24,7 @@ No secret values appear in this document. Secret names and file paths are fine. 
 | [`mcp_server.py`](mcp_server.py) | Bearer-protected MCP server (the 7 base tools) | `/opt/<name>/mcp_server.py` |
 | [`coworker_tools.py`](coworker_tools.py) | The 35 extra MCP tools, registered only with `BOT_PROFILE=coworker` | `/opt/<name>/coworker_tools.py` |
 | [`slackfmt.py`](slackfmt.py) | Block Kit text, file metadata, and forwarded/shared message extraction (relay and MCP) | `/opt/<name>/slackfmt.py` |
+| [`redact.py`](redact.py) | Replaces secret-shaped text in what the MCP tools are asked to send (MCP) | `/opt/<name>/redact.py` |
 | [`scripts/NAME-set`](scripts/NAME-set) | Writes one env value, from the tty or stdin | `/usr/local/sbin/<name>-set` |
 | [`scripts/NAME-health`](scripts/NAME-health) | Health check | `/usr/local/bin/<name>-health` |
 | [`systemd/NAME-relay.service`](systemd/NAME-relay.service) | Relay service | `/etc/systemd/system/<name>-relay.service` |
@@ -175,7 +176,7 @@ Create the group **before** the user. On the reference host, `useradd --system` 
 sudo groupadd --system <name>
 sudo useradd --system -g <name> -d /nonexistent --no-create-home --shell /usr/sbin/nologin <name>
 sudo mkdir -p /opt/<name>
-# copy archive.py, relay.py, mcp_server.py, coworker_tools.py, slackfmt.py (from this repo, after substitution) and this README into /opt/<name>
+# copy archive.py, relay.py, mcp_server.py, coworker_tools.py, slackfmt.py, redact.py (from this repo, after substitution) and this README into /opt/<name>
 sudo uv venv --python /usr/bin/python3 --no-managed-python /opt/<name>/venv
 sudo uv pip install --python /opt/<name>/venv/bin/python \
   slack_bolt==1.30.0 slack_sdk==3.47.0 mcp==2.3.0 uvicorn==0.54.0 httpx==0.28.1 aiohttp==3.14.5
@@ -193,6 +194,7 @@ Build the venv on the **system** Python. A uv-managed Python under a home direct
 | `/opt/<name>/mcp_server.py` | root 0644 | Bearer-protected MCP server |
 | `/opt/<name>/coworker_tools.py` | root 0644 | Extra MCP tools for `BOT_PROFILE=coworker` |
 | `/opt/<name>/slackfmt.py` | root 0644 | Message/file formatting shared by relay and MCP |
+| `/opt/<name>/redact.py` | root 0644 | Outgoing secret filter used by the MCP |
 | `/etc/<name>/` | root 0700 | Secrets directory |
 | `/etc/<name>/slack.env` | root 0600 | Env file: tokens, webhook URL and key, allowlist (template: `slack.env.example`) |
 | `/etc/<name>/mcp-bearer` | root 0600 | MCP bearer, 64 hex characters from `openssl rand -hex 32` |
@@ -465,6 +467,8 @@ Channels can be given as an ID or a name (`#general`, resolved through the archi
 | `add_reaction` | `channel`, `timestamp`, `emoji` | `reactions.add`. `already_reacted` counts as success. |
 
 A message comes back as `{ts, user, user_name, text, permalink, thread_ts?, reply_count?, subtype?, reactions?, files?}`.
+
+**Outgoing filter.** A model that has been shown a credential can repeat it in a message, whatever the prompt says. So every string argument of every tool call passes through `redact.py` before the tool runs: message text, Block Kit JSON, file names, titles, comments and content (base64 content is filtered when it decodes to text), topics, bookmark links. Anything shaped like a credential is replaced with `[redacted: <kind>]`, the tool result gains `redacted` (the kinds found, never the values) and `redacted_note`, and the server logs one warning with the tool name and the kinds. It knows these shapes: private key blocks, Slack tokens, app tokens and webhook URLs, GitHub tokens, AWS access key IDs and `aws_secret_access_key=` assignments, `sk-…` / `sk-ant-…` / `xai-…` / `AIza…` API keys, Tailscale keys, JSON web tokens, and `Bearer <token>`. It matches shapes, not meaning: a password written in plain words passes. `REDACT_EXTRA_REGEX` adds one pattern of your own (for example a wallet key format); `REDACT_OUTGOING=0` turns the filter off. Check a text by hand with `echo '…' | python3 redact.py`.
 
 **Design choices in the current code**, if you want to change them later: the MCP can reply in any existing thread in any conversation the bot is in, not only threads where an allowlisted user pinged it. History from channels the bot was removed from stays in the archive and remains searchable.
 
